@@ -108,7 +108,6 @@
       import {
         getAuth,
         signInAnonymously,
-        signInWithCustomToken,
         onAuthStateChanged,
       } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
       import {
@@ -122,17 +121,15 @@
         updateDoc,
       } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-      // IMPORTANT: These variables are provided by the environment. Do not change them.
-      const appId =
-        typeof __app_id !== "undefined" ? __app_id : "default-app-id";
-      const firebaseConfig =
-        typeof __firebase_config !== "undefined"
-          ? JSON.parse(__firebase_config)
-          : {};
-      const initialAuthToken =
-        typeof __initial_auth_token !== "undefined"
-          ? __initial_auth_token
-          : null;
+      // IMPORTANT: This object is your own Firebase configuration.
+      const firebaseConfig = {
+        apiKey: "AIzaSyCh5SVzwWqriNQLgiGvLlovj8V6QT_OeYU",
+        authDomain: "tournament-2026-ap.firebaseapp.com",
+        projectId: "tournament-2026-ap",
+        storageBucket: "tournament-2026-ap.firebasestorage.app",
+        messagingSenderId: "845548492063",
+        appId: "1:845548492063:web:b658634a0424514abacc2a",
+      };
 
       // Set log level for debugging Firestore.
       setLogLevel("debug");
@@ -140,6 +137,15 @@
       const app = initializeApp(firebaseConfig);
       const db = getFirestore(app);
       const auth = getAuth(app);
+
+      // Sign in anonymously for public access
+      signInAnonymously(auth).catch((error) => {
+        console.error("Anonymous sign-in failed:", error);
+        showMessage(
+          "Error during authentication. Please try again.",
+          "bg-red-200 text-red-700"
+        );
+      });
 
       const registerButton = document.getElementById("register-button");
       const cancelButton = document.getElementById("cancel-edit-button");
@@ -155,26 +161,15 @@
       let currentDocId = null;
 
       // Handle authentication state changes
-      onAuthStateChanged(auth, async (user) => {
+      onAuthStateChanged(auth, (user) => {
         if (user) {
           userId = user.uid;
           isAuthReady = true;
           console.log("User authenticated with UID:", userId);
           setupFirestoreListener();
         } else {
-          try {
-            if (initialAuthToken) {
-              await signInWithCustomToken(auth, initialAuthToken);
-            } else {
-              await signInAnonymously(auth);
-            }
-          } catch (error) {
-            console.error("Authentication failed:", error);
-            showMessage(
-              "Error during authentication. Please try again.",
-              "bg-red-200 text-red-700"
-            );
-          }
+          console.log("Authentication state changed: user is signed out.");
+          isAuthReady = false;
         }
       });
 
@@ -198,28 +193,26 @@
           return;
         }
 
-        const registrationsCollection = collection(
-          db,
-          `artifacts/${appId}/public/data/registrations`
-        );
+        if (!isAuthReady || !userId) {
+          showMessage(
+            "Authentication not ready. Please wait a moment and try again.",
+            "bg-red-200 text-red-700"
+          );
+          return;
+        }
+
+        const registrationsCollection = collection(db, "registrations");
 
         try {
           if (currentDocId) {
             // Update existing document
-            const docRef = doc(
-              db,
-              "artifacts",
-              appId,
-              "public",
-              "data",
-              "registrations",
-              currentDocId
-            );
+            const docRef = doc(db, "registrations", currentDocId);
             await updateDoc(docRef, {
               name,
               tshirtSize,
               number,
             });
+            console.log("Data successfully updated in Firestore.");
             showMessage(
               "Registration updated successfully!",
               "bg-green-200 text-green-700"
@@ -240,6 +233,7 @@
               userId, // Store the user ID with the document
               timestamp: new Date(),
             });
+            console.log("Data successfully sent to Firestore.");
             showMessage(
               "Registration successful!",
               "bg-green-200 text-green-700"
@@ -291,30 +285,30 @@
 
       // Set up real-time listener for the registrations collection
       function setupFirestoreListener() {
-        if (!isAuthReady) {
-          return;
-        }
-        const registrationsCollection = collection(
-          db,
-          `artifacts/${appId}/public/data/registrations`
-        );
+        console.log("Attempting to set up Firestore listener...");
+        const registrationsCollection = collection(db, "registrations");
         const q = query(registrationsCollection);
 
         onSnapshot(
           q,
           (querySnapshot) => {
+            console.log("Data received from Firestore!");
             loadingMessage.style.display = "none";
             userListDiv.innerHTML = ""; // Clear the list
 
             registrations = [];
             querySnapshot.forEach((doc) => {
-              registrations.push({ id: doc.id, ...doc.data() });
+              const data = doc.data();
+              console.log("Processing document:", doc.id, data);
+              registrations.push({ id: doc.id, ...data });
             });
 
             // Sort the registrations by timestamp for consistent ordering
-            registrations.sort(
-              (a, b) => a.timestamp.toDate() - b.timestamp.toDate()
-            );
+            registrations.sort((a, b) => {
+              const timestampA = a.timestamp ? a.timestamp.toDate() : 0;
+              const timestampB = b.timestamp ? b.timestamp.toDate() : 0;
+              return timestampA - timestampB;
+            });
 
             if (registrations.length === 0) {
               userListDiv.innerHTML =
@@ -327,17 +321,21 @@
 
                 const nameEl = document.createElement("p");
                 nameEl.className = "text-lg font-semibold text-gray-800";
-                nameEl.textContent = user.name;
+                nameEl.textContent = user.name || "N/A";
 
                 const detailsEl = document.createElement("div");
                 detailsEl.className =
                   "flex flex-col sm:flex-row sm:space-x-4 text-gray-600 text-sm w-full sm:w-auto";
 
                 const sizeEl = document.createElement("p");
-                sizeEl.innerHTML = `<span class="font-medium text-gray-500">T-shirt:</span> ${user.tshirtSize}`;
+                sizeEl.innerHTML = `<span class="font-medium text-gray-500">T-shirt:</span> ${
+                  user.tshirtSize || "N/A"
+                }`;
 
                 const numberEl = document.createElement("p");
-                numberEl.innerHTML = `<span class="font-medium text-gray-500">Number:</span> ${user.number}`;
+                numberEl.innerHTML = `<span class="font-medium text-gray-500">Number:</span> ${
+                  user.number || "N/A"
+                }`;
 
                 detailsEl.appendChild(sizeEl);
                 detailsEl.appendChild(numberEl);
