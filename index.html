@@ -75,9 +75,10 @@
 
         <button
           id="register-button"
-          class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg shadow-md hover:bg-blue-700 transition duration-300"
+          class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg shadow-md transition duration-300 opacity-50 cursor-not-allowed"
+          disabled
         >
-          Register
+          Loading...
         </button>
         <button
           id="cancel-edit-button"
@@ -108,6 +109,7 @@
       import {
         getAuth,
         signInAnonymously,
+        signInWithCustomToken,
         onAuthStateChanged,
       } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
       import {
@@ -121,31 +123,24 @@
         updateDoc,
       } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-      // IMPORTANT: This object is your own Firebase configuration.
-      const firebaseConfig = {
-        apiKey: "AIzaSyCh5SVzwWqriNQLgiGvLlovj8V6QT_OeYU",
-        authDomain: "tournament-2026-ap.firebaseapp.com",
-        projectId: "tournament-2026-ap",
-        storageBucket: "tournament-2026-ap.firebasestorage.app",
-        messagingSenderId: "845548492063",
-        appId: "1:845548492063:web:b658634a0424514abacc2a",
-      };
+      // IMPORTANT: Use the dynamically provided Firebase configuration
+      const appId =
+        typeof __app_id !== "undefined" ? __app_id : "default-app-id";
+      const firebaseConfig = JSON.parse(
+        typeof __firebase_config !== "undefined" ? __firebase_config : "{}"
+      );
+      const initialAuthToken =
+        typeof __initial_auth_token !== "undefined"
+          ? __initial_auth_token
+          : null;
 
       // Set log level for debugging Firestore.
       setLogLevel("debug");
 
-      const app = initializeApp(firebaseConfig);
-      const db = getFirestore(app);
-      const auth = getAuth(app);
-
-      // Sign in anonymously for public access
-      signInAnonymously(auth).catch((error) => {
-        console.error("Anonymous sign-in failed:", error);
-        showMessage(
-          "Error during authentication. Please try again.",
-          "bg-red-200 text-red-700"
-        );
-      });
+      let userId = null;
+      let currentDocId = null;
+      let registrations = [];
+      let db, auth;
 
       const registerButton = document.getElementById("register-button");
       const cancelButton = document.getElementById("cancel-edit-button");
@@ -156,23 +151,6 @@
       const messageDiv = document.getElementById("message");
       const loadingMessage = document.getElementById("loading-message");
 
-      let isAuthReady = false;
-      let userId = null;
-      let currentDocId = null;
-
-      // Handle authentication state changes
-      onAuthStateChanged(auth, (user) => {
-        if (user) {
-          userId = user.uid;
-          isAuthReady = true;
-          console.log("User authenticated with UID:", userId);
-          setupFirestoreListener();
-        } else {
-          console.log("Authentication state changed: user is signed out.");
-          isAuthReady = false;
-        }
-      });
-
       // Function to display a temporary message
       function showMessage(text, classes) {
         messageDiv.textContent = text;
@@ -182,115 +160,179 @@
         }, 3000);
       }
 
-      // Add or update a registration in Firestore
-      registerButton.addEventListener("click", async () => {
-        const name = nameInput.value.trim();
-        const tshirtSize = tshirtSizeInput.value.trim();
-        const number = numberInput.value.trim();
+      // Initialize Firebase and set up the main auth listener
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      auth = getAuth(app);
 
-        if (!name || !tshirtSize || !number) {
-          showMessage("Please fill in all fields.", "bg-red-200 text-red-700");
-          return;
-        }
-
-        if (!isAuthReady || !userId) {
-          showMessage(
-            "Authentication not ready. Please wait a moment and try again.",
-            "bg-red-200 text-red-700"
-          );
-          return;
-        }
-
-        const registrationsCollection = collection(db, "registrations");
-
+      // Use the provided auth token if available, otherwise sign in anonymously
+      async function authenticateUser() {
         try {
-          if (currentDocId) {
-            // Update existing document
-            const docRef = doc(db, "registrations", currentDocId);
-            await updateDoc(docRef, {
-              name,
-              tshirtSize,
-              number,
-            });
-            console.log("Data successfully updated in Firestore.");
-            showMessage(
-              "Registration updated successfully!",
-              "bg-green-200 text-green-700"
-            );
-            // Reset form and UI
-            nameInput.value = "";
-            tshirtSizeInput.value = "";
-            numberInput.value = "";
-            registerButton.textContent = "Register";
-            cancelButton.classList.add("hidden");
-            currentDocId = null;
+          if (initialAuthToken) {
+            await signInWithCustomToken(auth, initialAuthToken);
           } else {
-            // Add a new document
-            await addDoc(registrationsCollection, {
-              name,
-              tshirtSize,
-              number,
-              userId, // Store the user ID with the document
-              timestamp: new Date(),
-            });
-            console.log("Data successfully sent to Firestore.");
-            showMessage(
-              "Registration successful!",
-              "bg-green-200 text-green-700"
-            );
-            nameInput.value = "";
-            tshirtSizeInput.value = "";
-            numberInput.value = "";
+            await signInAnonymously(auth);
           }
-        } catch (e) {
-          console.error("Error saving document: ", e);
+        } catch (error) {
+          console.error("Authentication failed:", error);
           showMessage(
-            "Error saving registration. Check the console for details.",
+            "Authentication failed. Please check the console for details.",
+            "bg-red-200 text-red-700"
+          );
+        }
+      }
+      authenticateUser();
+
+      // This listener will fire once the auth state is ready and every time it changes.
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          userId = user.uid;
+          console.log("User authenticated with UID:", userId);
+          registerButton.disabled = false;
+          registerButton.textContent = "Register";
+          registerButton.classList.remove("opacity-50", "cursor-not-allowed");
+          registerButton.classList.add("hover:bg-blue-700");
+
+          // Set up event listeners and Firestore listener ONLY when auth is ready
+          setupEventListeners();
+          setupFirestoreListener();
+        } else {
+          console.log("Authentication state changed: user is signed out.");
+          registerButton.disabled = true;
+          registerButton.textContent = "Authentication Failed";
+          registerButton.classList.add("opacity-50", "cursor-not-allowed");
+          registerButton.classList.remove("hover:bg-blue-700");
+          showMessage(
+            "Authentication failed. Please refresh the page.",
             "bg-red-200 text-red-700"
           );
         }
       });
 
-      // Cancel edit operation
-      cancelButton.addEventListener("click", () => {
-        nameInput.value = "";
-        tshirtSizeInput.value = "";
-        numberInput.value = "";
-        registerButton.textContent = "Register";
-        cancelButton.classList.add("hidden");
-        currentDocId = null;
-        showMessage("Edit cancelled.", "bg-gray-200 text-gray-700");
-      });
-
-      // Event listener for edit buttons
-      userListDiv.addEventListener("click", (e) => {
-        if (e.target.classList.contains("edit-button")) {
-          const docId = e.target.dataset.docId;
-          const userDoc = registrations.find((item) => item.id === docId);
-
-          if (userDoc) {
-            nameInput.value = userDoc.name;
-            tshirtSizeInput.value = userDoc.tshirtSize;
-            numberInput.value = userDoc.number;
-            currentDocId = docId;
-            registerButton.textContent = "Update";
-            cancelButton.classList.remove("hidden");
-            showMessage("Editing " + userDoc.name, "bg-blue-200 text-blue-700");
-            window.scrollTo({ top: 0, behavior: "smooth" });
+      // Add or update a registration in Firestore
+      function setupEventListeners() {
+        registerButton.addEventListener("click", async () => {
+          // IMPORTANT: Check for userId one last time before proceeding
+          if (!userId) {
+            showMessage(
+              "Authentication not ready. Please wait a moment and try again.",
+              "bg-red-200 text-red-700"
+            );
+            return;
           }
-        }
-      });
 
-      let registrations = []; // To store a local copy of registrations with their IDs
+          const name = nameInput.value.trim();
+          const tshirtSize = tshirtSizeInput.value.trim();
+          const number = numberInput.value.trim();
+
+          if (!name || !tshirtSize || !number) {
+            showMessage(
+              "Please fill in all fields.",
+              "bg-red-200 text-red-700"
+            );
+            return;
+          }
+
+          // Construct the correct collection path using the provided app ID
+          const registrationsCollectionPath = `/artifacts/${appId}/public/data/registrations`;
+          const registrationsCollection = collection(
+            db,
+            registrationsCollectionPath
+          );
+
+          try {
+            if (currentDocId) {
+              // Update existing document
+              const docRef = doc(db, registrationsCollectionPath, currentDocId);
+              await updateDoc(docRef, {
+                name,
+                tshirtSize,
+                number,
+              });
+              console.log("Data successfully updated in Firestore.");
+              showMessage(
+                "Registration updated successfully!",
+                "bg-green-200 text-green-700"
+              );
+              // Reset form and UI
+              nameInput.value = "";
+              tshirtSizeInput.value = "";
+              numberInput.value = "";
+              registerButton.textContent = "Register";
+              cancelButton.classList.add("hidden");
+              currentDocId = null;
+            } else {
+              // Add a new document
+              await addDoc(registrationsCollection, {
+                name,
+                tshirtSize,
+                number,
+                userId, // Store the user ID with the document
+                timestamp: new Date(),
+              });
+              console.log("Data successfully sent to Firestore.");
+              showMessage(
+                "Registration successful!",
+                "bg-green-200 text-green-700"
+              );
+              nameInput.value = "";
+              tshirtSizeInput.value = "";
+              numberInput.value = "";
+            }
+          } catch (e) {
+            console.error("Error saving document: ", e);
+            showMessage(
+              "Error saving registration. Check the console for details.",
+              "bg-red-200 text-red-700"
+            );
+          }
+        });
+
+        // Cancel edit operation
+        cancelButton.addEventListener("click", () => {
+          nameInput.value = "";
+          tshirtSizeInput.value = "";
+          numberInput.value = "";
+          registerButton.textContent = "Register";
+          cancelButton.classList.add("hidden");
+          currentDocId = null;
+          showMessage("Edit cancelled.", "bg-gray-200 text-gray-700");
+        });
+
+        // Event listener for edit buttons
+        userListDiv.addEventListener("click", (e) => {
+          if (e.target.classList.contains("edit-button")) {
+            const docId = e.target.dataset.docId;
+            const userDoc = registrations.find((item) => item.id === docId);
+
+            if (userDoc) {
+              nameInput.value = userDoc.name;
+              tshirtSizeInput.value = userDoc.tshirtSize;
+              numberInput.value = userDoc.number;
+              currentDocId = docId;
+              registerButton.textContent = "Update";
+              cancelButton.classList.remove("hidden");
+              showMessage(
+                "Editing " + userDoc.name,
+                "bg-blue-200 text-blue-700"
+              );
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }
+          }
+        });
+      }
 
       // Set up real-time listener for the registrations collection
       function setupFirestoreListener() {
         console.log("Attempting to set up Firestore listener...");
-        const registrationsCollection = collection(db, "registrations");
-        const q = query(registrationsCollection);
+        const registrationsCollectionPath = `/artifacts/${appId}/public/data/registrations`;
+        const registrationsCollection = collection(
+          db,
+          registrationsCollectionPath
+        );
 
         onSnapshot(
-          q,
+          registrationsCollection,
           (querySnapshot) => {
             console.log("Data received from Firestore!");
             loadingMessage.style.display = "none";
